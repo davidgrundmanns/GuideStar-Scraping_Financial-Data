@@ -1,0 +1,148 @@
+library(RSelenium)
+library(wdman)
+library(rvest)
+library(stringr)
+library(tidyr)
+library(dplyr)
+library(stringr)
+
+# input #
+#-------#
+org_nums <- c() # enter 9-digit identifiers
+
+# Start Chrome #
+#--------------#
+chdrv <- chrome(port = 4445L, chromever = "138.0.7204.169") # input your chrome version
+remDr <- remoteDriver(browserName = "chrome", port = 4445, javascript = FALSE)
+remDr$open()
+
+# c("support_state","support_local","support_other",
+# "service_state","service_local","service_general",
+# "donate_israel","donate_abroad","donate_other",
+# "dues","other")
+
+# Safe data in
+income_table <- data.frame(ngo_no = NA,
+                           support_state = NA,
+                           support_local = NA,
+                           support_other = NA,
+                           service_state = NA,
+                           service_local = NA,
+                           service_general = NA,
+                           donate_israel = NA,
+                           donate_abroad = NA,
+                           donate_other = NA,
+                           dues = NA,
+                           other = NA,
+                           budget_sum = NA)
+
+# Loop
+for(i in 1:length(org_nums)){
+org_number <- org_nums[i]
+finance_url <- paste0("https://www.guidestar.org.il/organization/", org_number, "/finances")
+
+# Navigate to URL
+remDr$navigate(finance_url)
+Sys.sleep(5)  # wait to load
+
+# Parse page html
+page_html <- remDr$getPageSource()[[1]] %>% read_html()
+
+# Extract finance entries
+items <- page_html %>% 
+  html_nodes(".finance-content") %>%
+  html_nodes(".finance-table-row")
+
+# if any finance entries exist, then
+  if (length(items) > 0){
+    data_list <- lapply(items, function(row) {
+      label <- row %>%
+        html_node(".finance-table-label") %>%
+        html_text(trim = TRUE)
+      
+      value <- row %>%
+        html_node(".finance-table-value") %>%
+        html_text(trim = TRUE) %>%
+        str_remove_all("₪|,") %>%
+        str_trim() %>%
+        as.numeric()
+      
+      tibble(item = label, value = value)
+    }) # end lappply
+
+    # Pivot
+    long_df <- bind_rows(data_list)
+
+    # safe only latest income data by source #
+    #----------------------------------------#
+    if( length(which(long_df == "יתר הוצאות לפעילות") > 0)) {
+    long_df <- long_df[as.integer(rownames(long_df)) < which(long_df == "יתר הוצאות לפעילות")[1],]
+    }
+    
+    if( length(which(long_df == "הוצאות שכר לפעילות") > 0)) {
+    long_df <- long_df[as.integer(rownames(long_df)) < which(long_df == "הוצאות שכר לפעילות")[1],]
+    }
+    
+    if( length(which(long_df == "הוצאת שכר ונלוות") > 0)) {
+    long_df <- long_df[as.integer(rownames(long_df)) < which(long_df == "הוצאות שכר ונלוות")[1],]
+    }
+    
+    if( length(which(long_df == "הוצאות שכר ונלוות") > 0)) {
+    long_df <- long_df[as.integer(rownames(long_df)) < which(long_df == "הוצאות שכר ונלוות")[1],]
+    }
+    
+    long_df <- rbind(long_df, c(item = "budget_sum", value = sum(as.numeric(long_df$value))))
+    long_df$value <- as.numeric(long_df$value)
+
+    # Recode Hebrew to English #
+    #--------------------------#
+    # Supports and allowances
+    long_df$item[long_df$item == "הקצבות ותמיכות מהמדינה"] <- "support_state"
+    long_df$item[long_df$item == "תמיכות מרשויות מקומיות"] <- "support_local"
+    long_df$item[long_df$item == "הקצבות ותמיכות אחרות"] <- "support_other"
+
+    # Income from the association's activities
+    long_df$item[long_df$item == "שירותים למדינה"] <- "service_state"
+    long_df$item[long_df$item == "שירותים לרשויות מקומיות"] <- "service_local"
+    long_df$item[long_df$item == "שירותים כללי"] <- "service_general"
+
+  # Donations
+  long_df$item[long_df$item == "תרומות מישראל"] <- "donate_israel"
+  long_df$item[long_df$item == "תרומות מחו\"ל"] <- "donate_abroad"
+  long_df$item[long_df$item == "תרומות בשווי כספי"] <- "donate_other"
+  
+  # Other income
+  long_df$item[long_df$item == "דמי חבר"] <- "dues"
+  long_df$item[long_df$item == "מקורות אחרים"] <- "other"
+  
+    # Pivot
+    income_wide <- long_df %>%
+      mutate(value = replace_na(value, 0)) %>%
+      pivot_wider(names_from = item, values_from = value, values_fill = 0) %>%
+      mutate(ngo_no = org_number) %>%
+      relocate(ngo_no)
+    if(ncol(income_wide) == 13) { 
+      colnames(income_wide) <- colnames(income_table) 
+    }
+    
+    # Donations of monetary value entry does not exist
+    if(ncol(income_wide) == 12 & !("donate_other" %in% colnames(income_wide))) {
+      income_wide$donate_other <- NA
+      income_wide <- income_wide[colnames(income_table)]
+      colnames(income_wide) <- colnames(income_table)
+    }
+  
+    income_table <- rbind(income_table, income_wide); rm(income_wide)
+  } else { # if items < 1
+      income_wide <- c(org_number, rep(NA, ncol(income_table)-1 ))
+      income_table <- rbind(income_table, income_wide); rm(income_wide)
+  } # end else
+} # end loop
+
+# Note: if sum = 0, then no budgetary data was actually recorded
+
+# close the Selenium client and the server
+remDr$close()
+
+# export data
+write.csv(income_table[-1,], "income_table.csv")
