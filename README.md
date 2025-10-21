@@ -24,6 +24,6 @@ Run `scrape_budgets.R`. Supply a vector `org_nums` of 9-digit association identi
 
 `income_table.csv` includes 14 columns, one for each of to the total annual revenue categories on the association registrar, column `ngo_no` to for the 9-digit association identifier and column `budget_sum`, the sum of all revenue categories, so the total annual income.
 
-If `budget_sum == 0` then no budgetary data actually recorded.
+If `budget_sum == 0` then no Financial data tab is listed for the corresponding association, or no financial data is reported in the Financial data segment.
 
 
